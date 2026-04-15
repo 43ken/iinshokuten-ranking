@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>近所の飲食店ランキング</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#181c24; --border:#262c38;
+    --text:#eef1f6; --muted:#9aa4b2; --accent:#ffb020; --accent2:#4da3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+       background:var(--bg);color:var(--text);line-height:1.5}
+  header{padding:20px 16px;border-bottom:1px solid var(--border);background:#12151c;position:sticky;top:0;z-index:10}
+  header h1{margin:0 0 4px;font-size:18px}
+  header p{margin:0;color:var(--muted);font-size:12px}
+  main{max-width:820px;margin:0 auto;padding:16px}
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  input[type=text]{width:100%;padding:10px 12px;background:#0c0f14;border:1px solid var(--border);
+                   border-radius:8px;color:var(--text);font-size:14px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{padding:11px 18px;border:0;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;
+         background:var(--accent);color:#1a1200}
+  button.secondary{background:#232a36;color:var(--text);border:1px solid var(--border)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .status{color:var(--muted);font-size:13px;margin-top:8px;min-height:1.3em}
+  .status.err{color:#ff7a7a}
+  .list{display:flex;flex-direction:column;gap:10px}
+  .shop{display:flex;gap:12px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:12px}
+  .rank{font-size:22px;font-weight:800;color:var(--accent);min-width:34px;text-align:center;align-self:center}
+  .thumb{width:72px;height:72px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}
+  .info{flex:1;min-width:0}
+  .name{font-weight:700;font-size:15px;margin:0 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .name a{color:var(--text);text-decoration:none}
+  .name a:hover{color:var(--accent2)}
+  .meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--muted)}
+  .meta span{display:inline-flex;align-items:center;gap:4px}
+  .badge{background:#232a36;border:1px solid var(--border);padding:2px 8px;border-radius:999px;font-size:11px}
+  .star{color:var(--accent)}
+  .notice{font-size:11px;color:var(--muted);padding:8px 12px;background:#1a1f2a;border-radius:8px;border:1px dashed var(--border)}
+  footer{padding:16px;text-align:center;color:var(--muted);font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🍜 近所の飲食店ランキング</h1>
+  <p>現在地から徒歩10分以内のお店を表示します</p>
+</header>
+<main>
+  <div class="panel" id="keyPanel">
+    <label for="apiKey">HotPepper API キー（初回のみ / <a href="https://webservice.recruit.co.jp/register/" target="_blank" style="color:var(--accent2)">無料登録</a>）</label>
+    <div class="row">
+      <input id="apiKey" type="text" placeholder="リクルートWebサービスのAPIキー" autocomplete="off" />
+      <button id="saveKey">保存</button>
+      <button id="clearKey" class="secondary">クリア</button>
+    </div>
+    <div class="status" id="keyStatus"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <button id="searchBtn">📍 現在地から検索</button>
+      <button id="reloadBtn" class="secondary" disabled>再取得</button>
+    </div>
+    <div class="status" id="status">位置情報を取得するには上のボタンを押してください。</div>
+  </div>
+
+  <div class="notice" id="notice" style="display:none">
+    ※ HotPepperグルメAPIは星評価を提供していないため「☆」は <b>—</b> 表示です。並び順は現在地からの徒歩時間順です。
+  </div>
+
+  <div class="list" id="list"></div>
+</main>
+<footer>Powered by <a href="https://webservice.recruit.co.jp/" target="_blank" style="color:var(--muted)">ホットペッパー Webサービス</a></footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const keyInput = $('apiKey'), keyStatus = $('keyStatus');
+  const searchBtn = $('searchBtn'), reloadBtn = $('reloadBtn');
+  const statusEl = $('status'), listEl = $('list'), noticeEl = $('notice');
+
+  const KEY_STORAGE = 'hotpepper_api_key';
+  const WALK_SPEED_M_PER_MIN = 80; // 80m/min
+  const MAX_WALK_MIN = 10;
+
+  // ---- API key management ----
+  function loadKey(){
+    const k = localStorage.getItem(KEY_STORAGE) || '';
+    keyInput.value = k;
+    keyStatus.textContent = k ? '✓ APIキー保存済み' : '';
+    return k;
+  }
+  $('saveKey').onclick = () => {
+    const k = keyInput.value.trim();
+    if(!k){ keyStatus.textContent = 'キーを入力してください'; keyStatus.className='status err'; return; }
+    localStorage.setItem(KEY_STORAGE, k);
+    keyStatus.textContent = '✓ 保存しました';
+    keyStatus.className = 'status';
+  };
+  $('clearKey').onclick = () => {
+    localStorage.removeItem(KEY_STORAGE);
+    keyInput.value = '';
+    keyStatus.textContent = 'クリアしました';
+  };
+
+  // ---- Geolocation ----
+  function getLocation(){
+    return new Promise((resolve, reject) => {
+      // Secure context check (HTTPS or localhost required on mobile)
+      if(!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'){
+        return reject(new Error(
+          'このページは HTTPS ではないため位置情報を取得できません。\n' +
+          '現在のURL: ' + location.origin + '\n' +
+          'HTTPS の URL からアクセスしてください。'
+        ));
+      }
+      if(!navigator.geolocation) return reject(new Error('このブラウザは位置情報に対応していません'));
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        (err) => {
+          let msg;
+          switch(err.code){
+            case 1: // PERMISSION_DENIED
+              msg = '位置情報の利用が拒否されました。ブラウザの設定で位置情報を許可してください。';
+              break;
+            case 2: // POSITION_UNAVAILABLE
+              msg = '位置情報を取得できませんでした。屋外・窓際で再試行するか、OSの位置情報サービスがONか確認してください。';
+              break;
+            case 3: // TIMEOUT
+              msg = '位置情報の取得がタイムアウトしました。再試行してください。';
+              break;
+            default:
+              msg = '位置情報の取得に失敗: ' + err.message;
+          }
+          reject(new Error(msg));
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+      );
+    });
+  }
+
+  // ---- HotPepper API via CORS proxy ----
+  // HotPepper API does not support CORS or JSONP, so we proxy through corsproxy.io
+  const CORS_PROXY = 'https://corsproxy.io/?';
+
+  async function fetchShops(key, lat, lng){
+    // range=3 → 1000m 圏内
+    const api = 'https://webservice.recruit.co.jp/hotpepper/gourmet/v1/'
+      + '?key=' + encodeURIComponent(key)
+      + '&lat=' + lat + '&lng=' + lng
+      + '&range=3&count=50&format=json&datum=world';
+    const url = CORS_PROXY + encodeURIComponent(api);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, { signal: controller.signal });
+    } catch(e){
+      clearTimeout(timer);
+      if(e.name === 'AbortError') throw new Error('APIタイムアウト（15秒応答なし）');
+      throw new Error('ネットワークエラー: ' + e.message);
+    }
+    clearTimeout(timer);
+    if(!res.ok) throw new Error('APIエラー (HTTP ' + res.status + ')');
+    const data = await res.json();
+    if(data.results && data.results.error){
+      throw new Error('APIエラー: ' + (data.results.error[0] && data.results.error[0].message || 'unknown'));
+    }
+    return (data.results && data.results.shop) || [];
+  }
+
+  // ---- Haversine distance (meters) ----
+  function distanceM(lat1, lng1, lat2, lng2){
+    const R = 6371000;
+    const toRad = (d) => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  // ---- Render ----
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  function render(shops){
+    listEl.innerHTML = '';
+    if(!shops.length){
+      listEl.innerHTML = '<div class="panel" style="text-align:center;color:var(--muted)">徒歩10分以内にお店が見つかりませんでした。</div>';
+      return;
+    }
+    noticeEl.style.display = 'block';
+    shops.forEach((s, i) => {
+      const el = document.createElement('div');
+      el.className = 'shop';
+      const thumb = s.photo && s.photo.mobile && s.photo.mobile.s || '';
+      el.innerHTML = `
+        <div class="rank">${i+1}</div>
+        ${thumb ? `<img class="thumb" src="${escapeHtml(thumb)}" alt="" loading="lazy" />` : '<div class="thumb"></div>'}
+        <div class="info">
+          <p class="name"><a href="${escapeHtml(s.urls && s.urls.pc || '#')}" target="_blank" rel="noopener">${escapeHtml(s.name)}</a></p>
+          <div class="meta">
+            <span class="star">☆ —</span>
+            <span>🚶 徒歩 ${s.walkMin} 分</span>
+            <span class="badge">${escapeHtml(s.genre && s.genre.name || '—')}</span>
+            ${s.budget && s.budget.name ? `<span>💴 ${escapeHtml(s.budget.name)}</span>` : ''}
+          </div>
+        </div>
+      `;
+      listEl.appendChild(el);
+    });
+  }
+
+  // ---- Search flow ----
+  let lastResult = null;
+
+  async function runSearch(){
+    const key = localStorage.getItem(KEY_STORAGE);
+    if(!key){ statusEl.textContent = '先にAPIキーを保存してください'; statusEl.className='status err'; return; }
+    statusEl.className = 'status';
+    statusEl.textContent = '📍 位置情報を取得中...';
+    searchBtn.disabled = true; reloadBtn.disabled = true;
+    try{
+      const loc = await getLocation();
+      statusEl.textContent = `✓ 現在地 取得 (${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}) — お店を検索中...`;
+      const shops = await fetchShops(key, loc.lat, loc.lng);
+      // compute walking time, filter ≤10 min, sort by distance
+      const processed = shops
+        .map(s => {
+          const d = distanceM(loc.lat, loc.lng, parseFloat(s.lat), parseFloat(s.lng));
+          const walkMin = Math.max(1, Math.ceil(d / WALK_SPEED_M_PER_MIN));
+          return Object.assign({}, s, { distM: d, walkMin });
+        })
+        .filter(s => s.walkMin <= MAX_WALK_MIN)
+        .sort((a, b) => a.distM - b.distM);
+      lastResult = processed;
+      render(processed);
+      statusEl.textContent = `✓ ${processed.length} 件のお店が見つかりました（徒歩${MAX_WALK_MIN}分以内）`;
+      reloadBtn.disabled = false;
+    }catch(e){
+      statusEl.textContent = '✗ ' + e.message;
+      statusEl.className = 'status err';
+    }finally{
+      searchBtn.disabled = false;
+    }
+  }
+
+  searchBtn.onclick = runSearch;
+  reloadBtn.onclick = runSearch;
+
+  loadKey();
+})();
+</script>
+</body>
+</html>
